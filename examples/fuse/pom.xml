@@ -20,7 +20,7 @@
     <parent>
         <artifactId>keycloak-examples-parent</artifactId>
         <groupId>org.keycloak</groupId>
-        <version>1.9.1.Final-SNAPSHOT</version>
+        <version>2.0.0.CR1-SNAPSHOT</version>
     </parent>
 
     <name>Fuse examples</name>
@@ -29,7 +29,9 @@
 
     <artifactId>keycloak-examples-fuse-parent</artifactId>
     <packaging>pom</packaging>
-
+    <properties>
+        <camel.version>2.16.1</camel.version>
+    </properties>
     <modules>
         <module>customer-app-fuse</module>
         <module>product-app-fuse</module>
@@ -37,6 +39,7 @@
         <module>cxf-jaxws</module>
         <module>camel</module>
         <module>features</module>
+        <module>external-config</module>
     </modules>
 
 </project>

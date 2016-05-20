@@ -21,8 +21,10 @@ import java.util.Map;
 
 import org.junit.Assert;
 import org.junit.ClassRule;
+import org.junit.FixMethodOrder;
 import org.junit.Rule;
 import org.junit.Test;
+import org.junit.runners.MethodSorters;
 import org.keycloak.federation.ldap.LDAPFederationProvider;
 import org.keycloak.federation.ldap.LDAPFederationProviderFactory;
 import org.keycloak.federation.ldap.mappers.membership.LDAPGroupMapperMode;
@@ -45,6 +47,7 @@ import org.keycloak.testsuite.rule.LDAPRule;
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
  */
+@FixMethodOrder(MethodSorters.NAME_ASCENDING)
 public class LDAPGroupMapper2WaySyncTest {
 
     @ClassRule
@@ -61,6 +64,7 @@ public class LDAPGroupMapper2WaySyncTest {
             Map<String,String> ldapConfig = ldapRule.getConfig();
             ldapConfig.put(LDAPConstants.SYNC_REGISTRATIONS, "true");
             ldapConfig.put(LDAPConstants.EDIT_MODE, UserFederationProvider.EditMode.WRITABLE.toString());
+            ldapConfig.put(LDAPConstants.BATCH_SIZE_FOR_SYNC, "4"); // Issues with pagination on ApacheDS
 
             ldapModel = appRealm.addUserFederationProvider(LDAPFederationProviderFactory.PROVIDER_NAME, ldapConfig, 0, "test-ldap", -1, -1, 0);
             LDAPFederationProvider ldapFedProvider = FederationTestUtils.getLdapProvider(session, ldapModel);

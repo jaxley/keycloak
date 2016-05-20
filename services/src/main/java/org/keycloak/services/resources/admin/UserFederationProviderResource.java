@@ -16,12 +16,14 @@
  */
 package org.keycloak.services.resources.admin;
 
+import java.text.MessageFormat;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 
 import javax.ws.rs.Consumes;
 import javax.ws.rs.DELETE;
@@ -40,7 +42,7 @@ import javax.ws.rs.core.UriInfo;
 import org.jboss.resteasy.annotations.cache.NoCache;
 import org.jboss.resteasy.spi.NotFoundException;
 import org.keycloak.events.admin.OperationType;
-import org.keycloak.mappers.MapperConfigValidationException;
+import org.keycloak.mappers.FederationConfigValidationException;
 import org.keycloak.mappers.UserFederationMapper;
 import org.keycloak.mappers.UserFederationMapperFactory;
 import org.keycloak.models.KeycloakSession;
@@ -63,7 +65,6 @@ import org.keycloak.representations.idm.UserFederationProviderRepresentation;
 import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.ServicesLogger;
 import org.keycloak.services.managers.UsersSyncManager;
-import org.keycloak.timer.TimerProvider;
 
 /**
  * @author <a href="mailto:mposolda@redhat.com">Marek Posolda</a>
@@ -99,12 +100,20 @@ public class UserFederationProviderResource {
     @Consumes(MediaType.APPLICATION_JSON)
     public void updateProviderInstance(UserFederationProviderRepresentation rep) {
         auth.requireManage();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         String displayName = rep.getDisplayName();
         if (displayName != null && displayName.trim().equals("")) {
             displayName = null;
         }
         UserFederationProviderModel model = new UserFederationProviderModel(rep.getId(), rep.getProviderName(), rep.getConfig(), rep.getPriority(), displayName,
                 rep.getFullSyncPeriod(), rep.getChangedSyncPeriod(), rep.getLastSync());
+
+        UserFederationProvidersResource.validateFederationProviderConfig(session, auth, realm, model);
+
         realm.updateUserFederationProvider(model);
         new UsersSyncManager().notifyToRefreshPeriodicSync(session, realm, model, false);
         boolean kerberosCredsAdded = UserFederationProvidersResource.checkKerberosCredential(session, realm, model);
@@ -125,6 +134,11 @@ public class UserFederationProviderResource {
     @Produces(MediaType.APPLICATION_JSON)
     public UserFederationProviderRepresentation getProviderInstance() {
         auth.requireView();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         return ModelToRepresentation.toRepresentation(this.federationProviderModel);
     }
 
@@ -136,6 +150,10 @@ public class UserFederationProviderResource {
     @NoCache
     public void deleteProviderInstance() {
         auth.requireManage();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
 
         realm.removeUserFederationProvider(this.federationProviderModel);
         new UsersSyncManager().notifyToRefreshPeriodicSync(session, realm, this.federationProviderModel, true);
@@ -152,9 +170,15 @@ public class UserFederationProviderResource {
     @POST
     @Path("sync")
     @NoCache
+    @Produces(MediaType.APPLICATION_JSON)
     public UserFederationSyncResult syncUsers(@QueryParam("action") String action) {
-        logger.debug("Syncing users");
         auth.requireManage();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
+        logger.debug("Syncing users");
 
         UsersSyncManager syncManager = new UsersSyncManager();
         UserFederationSyncResult syncResult;
@@ -177,9 +201,15 @@ public class UserFederationProviderResource {
      */
     @GET
     @Path("mapper-types")
+    @Produces(MediaType.APPLICATION_JSON)
     @NoCache
     public Map<String, UserFederationMapperTypeRepresentation> getMapperTypes() {
-        this.auth.requireView();
+        auth.requireView();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         KeycloakSessionFactory sessionFactory = session.getKeycloakSessionFactory();
         Map<String, UserFederationMapperTypeRepresentation> types = new HashMap<>();
         List<ProviderFactory> factories = sessionFactory.getProviderFactories(UserFederationMapper.class);
@@ -222,7 +252,12 @@ public class UserFederationProviderResource {
     @Produces(MediaType.APPLICATION_JSON)
     @NoCache
     public List<UserFederationMapperRepresentation> getMappers() {
-        this.auth.requireView();
+        auth.requireView();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         List<UserFederationMapperRepresentation> mappers = new LinkedList<>();
         for (UserFederationMapperModel model : realm.getUserFederationMappersByFederationProvider(this.federationProviderModel.getId())) {
             mappers.add(ModelToRepresentation.toRepresentation(realm, model));
@@ -261,6 +296,11 @@ public class UserFederationProviderResource {
     @Consumes(MediaType.APPLICATION_JSON)
     public Response addMapper(UserFederationMapperRepresentation mapper) {
         auth.requireManage();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         UserFederationMapperModel model = RepresentationToModel.toModel(realm, mapper);
 
         validateModel(model);
@@ -286,6 +326,11 @@ public class UserFederationProviderResource {
     @Produces(MediaType.APPLICATION_JSON)
     public UserFederationMapperRepresentation getMapperById(@PathParam("id") String id) {
         auth.requireView();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         UserFederationMapperModel model = realm.getUserFederationMapperById(id);
         if (model == null) throw new NotFoundException("Model not found");
         return ModelToRepresentation.toRepresentation(realm, model);
@@ -303,6 +348,11 @@ public class UserFederationProviderResource {
     @Consumes(MediaType.APPLICATION_JSON)
     public void update(@PathParam("id") String id, UserFederationMapperRepresentation rep) {
         auth.requireManage();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         UserFederationMapperModel model = realm.getUserFederationMapperById(id);
         if (model == null) throw new NotFoundException("Model not found");
         model = RepresentationToModel.toModel(realm, rep);
@@ -324,6 +374,11 @@ public class UserFederationProviderResource {
     @Path("mappers/{id}")
     public void delete(@PathParam("id") String id) {
         auth.requireManage();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
+
         UserFederationMapperModel model = realm.getUserFederationMapperById(id);
         if (model == null) throw new NotFoundException("Model not found");
         realm.removeUserFederationMapper(model);
@@ -339,8 +394,13 @@ public class UserFederationProviderResource {
     @POST
     @Path("mappers/{id}/sync")
     @NoCache
+    @Produces(MediaType.APPLICATION_JSON)
     public UserFederationSyncResult syncMapperData(@PathParam("id") String mapperId, @QueryParam("direction") String direction) {
         auth.requireManage();
+
+        if (federationProviderModel == null) {
+            throw new NotFoundException("Could not find federation provider");
+        }
 
         UserFederationMapperModel mapperModel = realm.getUserFederationMapperById(mapperId);
         if (mapperModel == null) throw new NotFoundException("Mapper model not found");
@@ -369,9 +429,12 @@ public class UserFederationProviderResource {
     private void validateModel(UserFederationMapperModel model) {
         try {
             UserFederationMapperFactory mapperFactory = (UserFederationMapperFactory) session.getKeycloakSessionFactory().getProviderFactory(UserFederationMapper.class, model.getFederationMapperType());
-            mapperFactory.validateConfig(realm, model);
-        } catch (MapperConfigValidationException ex) {
-            throw new ErrorResponseException("Validation error", ex.getMessage(), Response.Status.BAD_REQUEST);
+            mapperFactory.validateConfig(realm, federationProviderModel, model);
+        } catch (FederationConfigValidationException ex) {
+            logger.error(ex.getMessage());
+            Properties messages = AdminRoot.getMessages(session, realm, auth.getAuth().getToken().getLocale());
+            throw new ErrorResponseException(ex.getMessage(), MessageFormat.format(messages.getProperty(ex.getMessage(), ex.getMessage()), ex.getParameters()),
+                    Response.Status.BAD_REQUEST);
         }
     }
 

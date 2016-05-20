@@ -69,7 +69,8 @@
             ],
             "realmRoles": [ "user","admin" ],
             "clientRoles": {
-                "realm-management": [ "realm-admin" ]
+                "realm-management": [ "realm-admin" ],
+                "account": [ "manage-account" ]
             }
         },
         {
@@ -185,7 +186,19 @@
             "standardFlowEnabled": false,
             "directAccessGrantsEnabled": true,
             "secret": "password"
+        },
+        {
+            "clientId": "external-config",
+            "enabled": true,
+            "adminUrl": "http://localhost:8181/external-config",
+            "baseUrl": "http://localhost:8181/external-config",
+            "redirectUris": [
+                "http://localhost:8181/external-config",
+                "http://localhost:8181/external-config/*"
+            ],
+            "secret": "password"
         }
+
     ],
     "scopeMappings": [
         {

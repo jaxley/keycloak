@@ -36,6 +36,7 @@ import org.keycloak.models.GroupModel;
 import org.keycloak.models.IdentityProviderModel;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.ModelDuplicateException;
+import org.keycloak.models.ModelException;
 import org.keycloak.models.ModelReadOnlyException;
 import org.keycloak.models.RealmModel;
 import org.keycloak.models.UserConsentModel;
@@ -54,6 +55,7 @@ import org.keycloak.representations.idm.GroupRepresentation;
 import org.keycloak.representations.idm.UserConsentRepresentation;
 import org.keycloak.representations.idm.UserRepresentation;
 import org.keycloak.representations.idm.UserSessionRepresentation;
+import org.keycloak.services.ErrorResponseException;
 import org.keycloak.services.managers.AuthenticationManager;
 import org.keycloak.services.managers.ClientSessionCode;
 import org.keycloak.services.managers.UserManager;
@@ -74,11 +76,14 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.Response;
+import javax.ws.rs.core.Response.Status;
 import javax.ws.rs.core.UriBuilder;
 import javax.ws.rs.core.UriInfo;
 import javax.ws.rs.WebApplicationException;
 
+import java.io.IOException;
 import java.net.URI;
+import java.text.MessageFormat;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -86,6 +91,7 @@ import java.util.HashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import org.keycloak.models.UsernameLoginFailureModel;
@@ -94,6 +100,9 @@ import org.keycloak.services.managers.UserSessionManager;
 import org.keycloak.services.resources.AccountService;
 import org.keycloak.common.util.Time;
 import org.keycloak.services.validation.Validation;
+import org.keycloak.theme.Theme;
+import org.keycloak.theme.Theme.Type;
+import org.keycloak.theme.ThemeProvider;
 
 /**
  * Base resource for managing users
@@ -157,14 +166,14 @@ public class UsersResource {
                 attrsToRemove = Collections.emptySet();
             }
 
-            if (rep.isEnabled() != null && rep.isEnabled()) {
+            if (rep.isEnabled() != null && rep.isEnabled() && rep.getUsername() != null) {
                 UsernameLoginFailureModel failureModel = session.sessions().getUserLoginFailure(realm, rep.getUsername().toLowerCase());
                 if (failureModel != null) {
                     failureModel.clearFailures();
                 }
             }
 
-            updateUserFromRep(user, rep, attrsToRemove, realm, session);
+            updateUserFromRep(user, rep, attrsToRemove, realm, session, true);
             adminEvent.operation(OperationType.UPDATE).resourcePath(uriInfo).representation(rep).success();
 
             if (session.getTransaction().isActive()) {
@@ -203,7 +212,7 @@ public class UsersResource {
         try {
             UserModel user = session.users().addUser(realm, rep.getUsername());
             Set<String> emptySet = Collections.emptySet();
-            updateUserFromRep(user, rep, emptySet, realm, session);
+            updateUserFromRep(user, rep, emptySet, realm, session, false);
 
             adminEvent.operation(OperationType.CREATE).resourcePath(uriInfo, user.getId()).representation(rep).success();
 
@@ -220,7 +229,7 @@ public class UsersResource {
         }
     }
 
-    public static void updateUserFromRep(UserModel user, UserRepresentation rep, Set<String> attrsToRemove, RealmModel realm, KeycloakSession session) {
+    public static void updateUserFromRep(UserModel user, UserRepresentation rep, Set<String> attrsToRemove, RealmModel realm, KeycloakSession session, boolean removeMissingRequiredActions) {
         if (rep.getUsername() != null && realm.isEditUsernameAllowed()) {
             user.setUsername(rep.getUsername());
         }
@@ -242,7 +251,7 @@ public class UsersResource {
             for (String action : allActions) {
                 if (reqActions.contains(action)) {
                     user.addRequiredAction(action);
-                } else {
+                } else if (removeMissingRequiredActions) {
                     user.removeRequiredAction(action);
                 }
             }
@@ -304,6 +313,7 @@ public class UsersResource {
     public Map<String, Object> impersonate(final @PathParam("id") String id) {
         auth.init(RealmAuth.Resource.IMPERSONATION);
         auth.requireManage();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -321,7 +331,7 @@ public class UsersResource {
         EventBuilder event = new EventBuilder(realm, session, clientConnection);
 
         UserSessionModel userSession = session.sessions().createUserSession(realm, user, user.getUsername(), clientConnection.getRemoteAddr(), "impersonate", false, null, null);
-        AuthenticationManager.createLoginCookie(realm, userSession.getUser(), userSession, uriInfo, clientConnection);
+        AuthenticationManager.createLoginCookie(session, realm, userSession.getUser(), userSession, uriInfo, clientConnection);
         URI redirect = AccountService.accountServiceApplicationPage(uriInfo).build(realm.getName());
         Map<String, Object> result = new HashMap<>();
         result.put("sameRealm", sameRealm);
@@ -348,6 +358,7 @@ public class UsersResource {
     @Produces(MediaType.APPLICATION_JSON)
     public List<UserSessionRepresentation> getSessions(final @PathParam("id") String id) {
         auth.requireView();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -373,6 +384,7 @@ public class UsersResource {
     @Produces(MediaType.APPLICATION_JSON)
     public List<UserSessionRepresentation> getSessions(final @PathParam("id") String id, final @PathParam("clientId") String clientId) {
         auth.requireView();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -411,6 +423,7 @@ public class UsersResource {
     @Produces(MediaType.APPLICATION_JSON)
     public List<FederatedIdentityRepresentation> getFederatedIdentity(final @PathParam("id") String id) {
         auth.requireView();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -447,6 +460,7 @@ public class UsersResource {
     @NoCache
     public Response addFederatedIdentity(final @PathParam("id") String id, final @PathParam("provider") String provider, FederatedIdentityRepresentation rep) {
         auth.requireManage();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -472,6 +486,7 @@ public class UsersResource {
     @NoCache
     public void removeFederatedIdentity(final @PathParam("id") String id, final @PathParam("provider") String provider) {
         auth.requireManage();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -494,6 +509,7 @@ public class UsersResource {
     @Produces(MediaType.APPLICATION_JSON)
     public List<Map<String, Object>> getConsents(final @PathParam("id") String id) {
         auth.requireView();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -546,6 +562,7 @@ public class UsersResource {
     @NoCache
     public void revokeConsent(final @PathParam("id") String id, final @PathParam("client") String clientId) {
         auth.requireManage();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -577,6 +594,7 @@ public class UsersResource {
     @POST
     public void logout(final @PathParam("id") String id) {
         auth.requireManage();
+
         UserModel user = session.users().getUserById(id, realm);
         if (user == null) {
             throw new NotFoundException("User not found");
@@ -672,14 +690,21 @@ public class UsersResource {
         return results;
     }
 
+    @Path("count")
+    @GET
+    @NoCache
+    @Produces(MediaType.APPLICATION_JSON)
+    public Integer getUsersCount() {
+        auth.requireView();
+
+        return session.users().getUsersCount(realm);
+    }
+
     @Path("{id}/role-mappings")
     public RoleMapperResource getRoleMappings(@PathParam("id") String id) {
+        auth.init(RealmAuth.Resource.USER);
 
         UserModel user = session.users().getUserById(id, realm);
-        if (user == null) {
-            throw new NotFoundException("User not found");
-        }
-        auth.init(RealmAuth.Resource.USER);
 
         RoleMapperResource resource =  new RoleMapperResource(realm, auth, user, adminEvent);
         ResteasyProviderFactory.getInstance().injectProperties(resource);
@@ -719,6 +744,10 @@ public class UsersResource {
             throw new BadRequestException("Resetting to N old passwords is not allowed.");
         } catch (ModelReadOnlyException mre) {
             throw new BadRequestException("Can't reset password as account is read only");
+        } catch (ModelException e) {
+            Properties messages = AdminRoot.getMessages(session, realm, auth.getAuth().getToken().getLocale());
+            throw new ErrorResponseException(e.getMessage(), MessageFormat.format(messages.getProperty(e.getMessage(), e.getMessage()), e.getParameters()),
+                    Status.BAD_REQUEST);
         }
         if (pass.isTemporary() != null && pass.isTemporary()) user.addRequiredAction(UserModel.RequiredAction.UPDATE_PASSWORD);
 
@@ -926,7 +955,17 @@ public class UsersResource {
         if (group == null) {
             throw new NotFoundException("Group not found");
         }
-        if (user.isMemberOf(group)) user.leaveGroup(group);
+
+        try {
+            if (user.isMemberOf(group)){
+                user.leaveGroup(group);
+                adminEvent.operation(OperationType.DELETE).resourcePath(uriInfo).success();
+            }
+        } catch (ModelException me) {
+            Properties messages = AdminRoot.getMessages(session, realm, auth.getAuth().getToken().getLocale());
+            throw new ErrorResponseException(me.getMessage(), MessageFormat.format(messages.getProperty(me.getMessage(), me.getMessage()), me.getParameters()),
+                    Response.Status.BAD_REQUEST);
+        }
     }
 
     @PUT
@@ -943,7 +982,10 @@ public class UsersResource {
         if (group == null) {
             throw new NotFoundException("Group not found");
         }
-        if (!user.isMemberOf(group)) user.joinGroup(group);
+        if (!user.isMemberOf(group)){
+            user.joinGroup(group);
+            adminEvent.operation(OperationType.CREATE).resourcePath(uriInfo).success();
+        }
     }
 
 

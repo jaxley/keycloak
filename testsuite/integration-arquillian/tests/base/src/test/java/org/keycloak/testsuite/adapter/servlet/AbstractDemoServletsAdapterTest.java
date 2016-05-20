@@ -25,7 +25,6 @@ import org.junit.Ignore;
 import org.junit.Test;
 import org.keycloak.OAuth2Constants;
 import org.keycloak.common.Version;
-import org.keycloak.common.util.Time;
 import org.keycloak.constants.AdapterConstants;
 import org.keycloak.protocol.oidc.OIDCLoginProtocolService;
 import org.keycloak.representations.VersionRepresentation;
@@ -49,6 +48,7 @@ import java.util.concurrent.TimeUnit;
 import static org.junit.Assert.*;
 import static org.keycloak.testsuite.util.URLAssert.assertCurrentUrlEquals;
 import static org.keycloak.testsuite.util.URLAssert.assertCurrentUrlStartsWithLoginUrlOf;
+import static org.keycloak.testsuite.util.WaitUtils.pause;
 
 /**
  *
@@ -58,6 +58,8 @@ public abstract class AbstractDemoServletsAdapterTest extends AbstractServletsAd
 
     @Page
     private CustomerPortal customerPortal;
+    @Page
+    private CustomerPortalSubsystem customerPortalSubsystem;
     @Page
     private SecurePortal securePortal;
     @Page
@@ -72,6 +74,11 @@ public abstract class AbstractDemoServletsAdapterTest extends AbstractServletsAd
     @Deployment(name = CustomerPortal.DEPLOYMENT_NAME)
     protected static WebArchive customerPortal() {
         return servletDeployment(CustomerPortal.DEPLOYMENT_NAME, CustomerServlet.class, ErrorServlet.class);
+    }
+
+    @Deployment(name = CustomerPortalSubsystem.DEPLOYMENT_NAME)
+    protected static WebArchive customerPortalSubsystem() {
+        return servletDeployment(CustomerPortalSubsystem.DEPLOYMENT_NAME, CustomerServlet.class, ErrorServlet.class);
     }
 
     @Deployment(name = SecurePortal.DEPLOYMENT_NAME)
@@ -97,6 +104,14 @@ public abstract class AbstractDemoServletsAdapterTest extends AbstractServletsAd
     @Deployment(name = InputPortal.DEPLOYMENT_NAME)
     protected static WebArchive inputPortal() {
         return servletDeployment(InputPortal.DEPLOYMENT_NAME, "keycloak.json", InputServlet.class);
+    }
+
+    @Test
+    public void testCustomerPortalWithSubsystemSettings() {
+        customerPortalSubsystem.navigateTo();
+        assertCurrentUrlStartsWithLoginUrlOf(testRealmPage);
+        testRealmLoginPage.form().login("bburke@redhat.com", "password");
+        assertTrue(driver.getPageSource().contains("Bill Burke") && driver.getPageSource().contains("Stian Thorgersen"));
     }
 
     @Test
@@ -226,7 +241,8 @@ public abstract class AbstractDemoServletsAdapterTest extends AbstractServletsAd
         demoRealmRep.setSsoSessionIdleTimeout(1);
         testRealmResource().update(demoRealmRep);
 
-//		Thread.sleep(2000);
+		pause(2000);
+
         productPortal.navigateTo();
         assertCurrentUrlStartsWithLoginUrlOf(testRealmPage);
 
@@ -253,16 +269,16 @@ public abstract class AbstractDemoServletsAdapterTest extends AbstractServletsAd
         demoRealmRep.setSsoSessionIdleTimeout(1);
         testRealmResource().update(demoRealmRep);
 
-        Time.setOffset(2);
+        pause(2000);
 
         productPortal.navigateTo();
         assertCurrentUrlStartsWithLoginUrlOf(testRealmPage);
 
         // need to cleanup so other tests don't fail, so invalidate http sessions on remote clients.
         demoRealmRep.setSsoSessionIdleTimeout(originalIdle);
+        testRealmResource().update(demoRealmRep);
         // note: sessions invalidated after each test, see: AbstractKeycloakTest.afterAbstractKeycloakTest()
 
-        Time.setOffset(0);
     }
 
     @Test

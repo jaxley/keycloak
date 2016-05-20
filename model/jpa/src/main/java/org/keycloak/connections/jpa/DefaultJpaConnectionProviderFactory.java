@@ -24,15 +24,21 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 import javax.naming.InitialContext;
 import javax.persistence.EntityManager;
 import javax.persistence.EntityManagerFactory;
 import javax.persistence.Persistence;
+import javax.persistence.spi.PersistenceUnitTransactionType;
 import javax.sql.DataSource;
 
+import org.hibernate.boot.registry.classloading.internal.ClassLoaderServiceImpl;
 import org.hibernate.ejb.AvailableSettings;
+import org.hibernate.jpa.boot.internal.ParsedPersistenceXmlDescriptor;
+import org.hibernate.jpa.boot.internal.PersistenceXmlParser;
+import org.hibernate.jpa.boot.spi.Bootstrap;
 import org.jboss.logging.Logger;
 import org.keycloak.Config;
 import org.keycloak.connections.jpa.updater.JpaUpdaterProvider;
@@ -40,6 +46,7 @@ import org.keycloak.connections.jpa.util.JpaUtils;
 import org.keycloak.models.KeycloakSession;
 import org.keycloak.models.KeycloakSessionFactory;
 import org.keycloak.provider.ServerInfoAwareProviderFactory;
+import org.keycloak.timer.TimerProvider;
 
 /**
  * @author <a href="mailto:sthorger@redhat.com">Stian Thorgersen</a>
@@ -94,8 +101,6 @@ public class DefaultJpaConnectionProviderFactory implements JpaConnectionProvide
 
                     Connection connection = null;
 
-                    String databaseSchema = config.get("databaseSchema");
-
                     Map<String, Object> properties = new HashMap<String, Object>();
 
                     String unitName = "keycloak-default";
@@ -121,24 +126,23 @@ public class DefaultJpaConnectionProviderFactory implements JpaConnectionProvide
                         }
                     }
 
-                    String driverDialect = config.get("driverDialect");
-                    if (driverDialect != null && driverDialect.length() > 0) {
-                        properties.put("hibernate.dialect", driverDialect);
-                    }
-
                     String schema = getSchema();
                     if (schema != null) {
                         properties.put(JpaUtils.HIBERNATE_DEFAULT_SCHEMA, schema);
                     }
 
-                    if (databaseSchema != null) {
-                        if (databaseSchema.equals("development-update")) {
-                            properties.put("hibernate.hbm2ddl.auto", "update");
-                            databaseSchema = null;
-                        } else if (databaseSchema.equals("development-validate")) {
-                            properties.put("hibernate.hbm2ddl.auto", "validate");
-                            databaseSchema = null;
-                        }
+
+                    String databaseSchema = config.get("databaseSchema");
+                    if (databaseSchema == null) {
+                        throw new RuntimeException("Property 'databaseSchema' needs to be specified in the configuration");
+                    }
+                    
+                    if (databaseSchema.equals("development-update")) {
+                        properties.put("hibernate.hbm2ddl.auto", "update");
+                        databaseSchema = null;
+                    } else if (databaseSchema.equals("development-validate")) {
+                        properties.put("hibernate.hbm2ddl.auto", "validate");
+                        databaseSchema = null;
                     }
 
                     properties.put("hibernate.show_sql", config.getBoolean("showSql", false));
@@ -147,6 +151,11 @@ public class DefaultJpaConnectionProviderFactory implements JpaConnectionProvide
                     connection = getConnection();
                     try{ 
 	                    prepareOperationalInfo(connection);
+
+                        String driverDialect = detectDialect(connection);
+                        if (driverDialect != null) {
+                            properties.put("hibernate.dialect", driverDialect);
+                        }
 	                    
 	                    if (databaseSchema != null) {
 	                        logger.trace("Updating database");
@@ -179,10 +188,19 @@ public class DefaultJpaConnectionProviderFactory implements JpaConnectionProvide
 	
 	                        logger.trace("Database update completed");
 	                    }
-	
+
+                        int globalStatsInterval = config.getInt("globalStatsInterval", -1);
+                        if (globalStatsInterval != -1) {
+                            properties.put("hibernate.generate_statistics", true);
+                        }
+
 	                    logger.trace("Creating EntityManagerFactory");
-	                    emf = Persistence.createEntityManagerFactory(unitName, properties);
+	                    emf = JpaUtils.createEntityManagerFactory(unitName, properties, getClass().getClassLoader());
 	                    logger.trace("EntityManagerFactory created");
+
+                        if (globalStatsInterval != -1) {
+                            startGlobalStats(session, globalStatsInterval);
+                        }
 
                     } catch (Exception e) {
                         // Safe rollback
@@ -209,7 +227,7 @@ public class DefaultJpaConnectionProviderFactory implements JpaConnectionProvide
             }
         }
     }
-    
+
     protected void prepareOperationalInfo(Connection connection) {
   		try {
   			operationalInfo = new LinkedHashMap<>();
@@ -218,10 +236,54 @@ public class DefaultJpaConnectionProviderFactory implements JpaConnectionProvide
   			operationalInfo.put("databaseUser", md.getUserName());
   			operationalInfo.put("databaseProduct", md.getDatabaseProductName() + " " + md.getDatabaseProductVersion());
   			operationalInfo.put("databaseDriver", md.getDriverName() + " " + md.getDriverVersion());
+
+            logger.debugf("Database info: %s", operationalInfo.toString());
   		} catch (SQLException e) {
   			logger.warn("Unable to prepare operational info due database exception: " + e.getMessage());
   		}
   	}
+
+
+    protected String detectDialect(Connection connection) {
+        String driverDialect = config.get("driverDialect");
+        if (driverDialect != null && driverDialect.length() > 0) {
+            return driverDialect;
+        } else {
+            try {
+                String dbProductName = connection.getMetaData().getDatabaseProductName();
+                String dbProductVersion = connection.getMetaData().getDatabaseProductVersion();
+
+                // For MSSQL2014, we may need to fix the autodetected dialect by hibernate
+                if (dbProductName.equals("Microsoft SQL Server")) {
+                    String topVersionStr = dbProductVersion.split("\\.")[0];
+                    boolean shouldSet2012Dialect = true;
+                    try {
+                        int topVersion = Integer.parseInt(topVersionStr);
+                        if (topVersion < 12) {
+                            shouldSet2012Dialect = false;
+                        }
+                    } catch (NumberFormatException nfe) {
+                    }
+                    if (shouldSet2012Dialect) {
+                        String sql2012Dialect = "org.hibernate.dialect.SQLServer2012Dialect";
+                        logger.debugf("Manually override hibernate dialect to %s", sql2012Dialect);
+                        return sql2012Dialect;
+                    }
+                }
+            } catch (SQLException e) {
+                logger.warnf("Unable to detect hibernate dialect due database exception : %s", e.getMessage());
+            }
+
+            return null;
+        }
+    }
+
+    protected void startGlobalStats(KeycloakSession session, int globalStatsIntervalSecs) {
+        logger.debugf("Started Hibernate statistics with the interval %s seconds", globalStatsIntervalSecs);
+        TimerProvider timer = session.getProvider(TimerProvider.class);
+        timer.scheduleTask(new HibernateStatsReporter(emf), globalStatsIntervalSecs * 1000, "ReportHibernateGlobalStats");
+    }
+
 
     @Override
     public Connection getConnection() {
